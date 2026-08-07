@@ -41,98 +41,182 @@ def get_pht_iso_string(dt: datetime) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(PHT).isoformat()
 
-async def get_channel_snapshot(client: httpx.AsyncClient, channel: int):
-    """Captures and resizes a JPEG snapshot from an NVR channel."""
-    url = f"http://{NVR_IP}/ISAPI/Streaming/channels/{channel}/picture"
+def parse_dahua_response(text: str) -> dict:
+    """Parses Dahua's plain text key=value response into a Python dictionary."""
+    result = {}
+    for line in text.strip().split('\n'):
+        if '=' in line:
+            key, value = line.split('=', 1)
+            result[key.strip()] = value.strip()
+    return result
+
+# --- BRAND DETECTION ---
+
+async def detect_nvr_brand(client: httpx.AsyncClient) -> str:
+    """Probes the NVR to automatically detect if it is Hikvision or Dahua."""
+    print(f"Probing {NVR_IP} to detect NVR brand...")
+    
+    # 1. Probe for Hikvision (ISAPI)
+    try:
+        res_hik = await client.get(f"http://{NVR_IP}/ISAPI/System/deviceInfo")
+        if res_hik.status_code == 200:
+            return "HIKVISION"
+    except Exception:
+        pass
+
+    # 2. Probe for Dahua (CGI)
+    try:
+        res_dah = await client.get(f"http://{NVR_IP}/cgi-bin/magicBox.cgi?action=getSystemInfo")
+        if res_dah.status_code == 200:
+            return "DAHUA"
+    except Exception:
+        pass
+
+    return "UNKNOWN"
+
+# --- UNIVERSAL DATA FETCHERS ---
+
+async def get_channel_snapshot(client: httpx.AsyncClient, channel: int, brand: str):
+    """Captures and resizes a JPEG snapshot based on the detected brand."""
+    if brand == "HIKVISION":
+        url = f"http://{NVR_IP}/ISAPI/Streaming/channels/{channel}/picture"
+    else: # DAHUA
+        url = f"http://{NVR_IP}/cgi-bin/snapshot.cgi?channel={channel}"
+        
     try:
         response = await client.get(url)
         if response.status_code != 200:
             print(f"[Channel {channel}] Snapshot fetch failed with status {response.status_code}")
             return None
         
-        # Open image from bytes and resize using Pillow
         img = Image.open(BytesIO(response.content))
         return img.resize((640, 360), Image.Resampling.LANCZOS)
     except Exception as e:
         print(f"[Channel {channel}] Snapshot error: {str(e)}")
         return None
 
-async def get_channel_retention(client: httpx.AsyncClient, channel: int):
-    """Queries true retention metadata for a specific channel over the last 100 days."""
-    now = datetime.now(timezone.utc)
+async def get_channel_retention(client: httpx.AsyncClient, channel: int, brand: str):
+    """Calculates true retention metadata based on the detected brand's search engine."""
+    now = datetime.now(PHT)
     hundred_days_ago = now - timedelta(days=100)
 
-    # Hikvision requires strict UTC format (Z) for searches
-    start_time = hundred_days_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    unique_search_id = str(uuid.uuid4())
-
-    xml_payload = f"""
-    <CMSearchDescription>
-        <searchID>{unique_search_id}</searchID>
-        <trackList><trackID>{channel}</trackID></trackList>
-        <timeSpanList>
-            <timeSpan><startTime>{start_time}</startTime><endTime>{end_time}</endTime></timeSpan>
-        </timeSpanList>
-        <maxResults>1</maxResults>
-    </CMSearchDescription>
-    """.strip()
-
-    url = f"http://{NVR_IP}/ISAPI/ContentMgmt/search"
-    
     try:
-        response = await client.post(url, content=xml_payload, headers={"Content-Type": "application/xml"})
-        if response.status_code != 200:
-            return {"status": "Error querying recordings"}
+        if brand == "HIKVISION":
+            # Hikvision requires strict UTC format (Z) for searches
+            utc_now = datetime.now(timezone.utc)
+            utc_hundred_ago = utc_now - timedelta(days=100)
+            start_time = utc_hundred_ago.strftime("%Y-%m-%dT%H:%M:%SZ")
+            end_time = utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            unique_search_id = str(uuid.uuid4())
 
-        result = xmltodict.parse(response.text)
-        
-        match_list = result.get("CMSearchResult", {}).get("matchList", {})
-        if not match_list:
-            return {"hasRecording": False, "retentionDays": 0, "message": "No recording found"}
+            xml_payload = f"""
+            <CMSearchDescription>
+                <searchID>{unique_search_id}</searchID>
+                <trackList><trackID>{channel}</trackID></trackList>
+                <timeSpanList>
+                    <timeSpan><startTime>{start_time}</startTime><endTime>{end_time}</endTime></timeSpan>
+                </timeSpanList>
+                <maxResults>1</maxResults>
+            </CMSearchDescription>
+            """.strip()
 
-        match_items = match_list.get("searchMatchItem")
-        if not match_items:
-            return {"hasRecording": False, "retentionDays": 0, "message": "No recording found"}
+            url = f"http://{NVR_IP}/ISAPI/ContentMgmt/search"
+            response = await client.post(url, content=xml_payload, headers={"Content-Type": "application/xml"})
+            
+            if response.status_code != 200:
+                return {"status": "Error querying recordings"}
 
-        # Handle whether XML parsed a single item (dict) or multiple items (list)
-        first_match = match_items[0] if isinstance(match_items, list) else match_items
-        start_time_str = first_match.get("timeSpan", {}).get("startTime")
-        
-        # Parse the oldest date and ensure it is treated as UTC
-        oldest_date = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        
-        diff_time = now - oldest_date
-        
-        return {
-            "hasRecording": True,
-            "oldestRecording": get_pht_iso_string(oldest_date),
-            "latestRecording": get_pht_iso_string(now),
-            "retentionDays": math.ceil(diff_time.total_seconds() / (24 * 3600))
-        }
+            result = xmltodict.parse(response.text)
+            match_list = result.get("CMSearchResult", {}).get("matchList", {})
+            if not match_list:
+                return {"hasRecording": False, "retentionDays": 0, "message": "No recording found"}
+
+            match_items = match_list.get("searchMatchItem")
+            if not match_items:
+                return {"hasRecording": False, "retentionDays": 0, "message": "No recording found"}
+
+            first_match = match_items[0] if isinstance(match_items, list) else match_items
+            start_time_str = first_match.get("timeSpan", {}).get("startTime")
+            
+            oldest_date = datetime.strptime(start_time_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            diff_time = utc_now - oldest_date
+            
+            return {
+                "hasRecording": True,
+                "oldestRecording": get_pht_iso_string(oldest_date),
+                "latestRecording": get_pht_iso_string(now),
+                "retentionDays": math.ceil(diff_time.total_seconds() / (24 * 3600))
+            }
+
+        elif brand == "DAHUA":
+            start_str = hundred_days_ago.strftime("%Y-%m-%d %H:%M:%S")
+            end_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+            create_url = f"http://{NVR_IP}/cgi-bin/mediaFileFind.cgi?action=factory.create"
+            res_create = await client.get(create_url)
+            obj_id = parse_dahua_response(res_create.text).get("result")
+            
+            if not obj_id:
+                return {"hasRecording": False, "retentionDays": 0, "message": "Failed to create search session"}
+
+            cond_url = (f"http://{NVR_IP}/cgi-bin/mediaFileFind.cgi?action=findFile"
+                        f"&object={obj_id}&condition.Channel={channel}"
+                        f"&condition.StartTime={start_str}&condition.EndTime={end_str}"
+                        f"&condition.Types[0]=dav")
+            await client.get(cond_url)
+
+            next_url = f"http://{NVR_IP}/cgi-bin/mediaFileFind.cgi?action=findNextFile&object={obj_id}&count=1"
+            res_next = await client.get(next_url)
+            parsed_next = parse_dahua_response(res_next.text)
+
+            destroy_url = f"http://{NVR_IP}/cgi-bin/mediaFileFind.cgi?action=factory.destroy&object={obj_id}"
+            await client.get(destroy_url)
+
+            found = parsed_next.get("found", "0")
+            if found == "0" or "items[0].StartTime" not in parsed_next:
+                return {"hasRecording": False, "retentionDays": 0, "message": "No recording found"}
+
+            oldest_str = parsed_next["items[0].StartTime"]
+            oldest_date = datetime.strptime(oldest_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=PHT)
+            
+            diff_time = now - oldest_date
+            
+            return {
+                "hasRecording": True,
+                "oldestRecording": get_pht_iso_string(oldest_date),
+                "latestRecording": get_pht_iso_string(now),
+                "retentionDays": math.ceil(diff_time.total_seconds() / (24 * 3600))
+            }
+            
     except Exception as e:
         return {"status": "Failed parsing retention details", "error": str(e)}
 
 # --- MAIN EXECUTION LOGIC ---
 
 async def generate_collage_and_retention():
-    # Use HTTPX AsyncClient with Digest Auth natively
+    # Both Hikvision and Dahua use Digest Auth for secure API access
     auth = httpx.DigestAuth(USERNAME, PASSWORD)
     
-    # Grab the date stamp based on Philippine Time
     pht_now = datetime.now(PHT)
     pht_date_stamp = pht_now.strftime("%Y-%m-%d")
 
-    print(f"\nProcessing feeds and calculating real retention for {len(CHANNELS)} channels...")
-
     async with httpx.AsyncClient(auth=auth, timeout=30.0) as client:
-        # Create concurrent tasks for snapshots and retention
+        # Detect the brand before doing anything else
+        brand = await detect_nvr_brand(client)
+        
+        if brand == "UNKNOWN":
+            print(f"❌ Error: Could not determine NVR brand for {NVR_IP}. Check credentials or IP.")
+            return
+            
+        print(f"✅ Detected {brand} NVR!")
+        print(f"Processing feeds and calculating real retention for {len(CHANNELS)} channels...")
+
+        # Create concurrent tasks based on the detected brand
         tasks = []
         for channel in CHANNELS:
             task = asyncio.gather(
-                get_channel_snapshot(client, channel),
-                get_channel_retention(client, channel)
+                get_channel_snapshot(client, channel, brand),
+                get_channel_retention(client, channel, brand)
             )
             tasks.append(task)
 
@@ -148,7 +232,7 @@ async def generate_collage_and_retention():
             valid_snapshots.append(snapshot)
 
     if not valid_snapshots:
-        print("Error: Could not pull valid image feeds from any configured channel.")
+        print("❌ Error: Could not pull valid image feeds from any configured channel.")
         return
 
     # Dynamic Canvas Grid Math
@@ -165,9 +249,9 @@ async def generate_collage_and_retention():
         y = (index // cols) * tile_height
         collage.paste(img, (x, y))
 
-    # Save image collage and JSON metadata to disk
-    image_path = uploads_dir / f"{pht_date_stamp}-collage.jpg"
-    json_path = uploads_dir / f"{pht_date_stamp}-retention.txt"
+    # Dynamic file naming based on the brand
+    image_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-collage.jpg"
+    json_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-retention.txt"
 
     # Save JPEG with 85% quality
     collage.save(image_path, "JPEG", quality=85)
@@ -180,5 +264,4 @@ async def generate_collage_and_retention():
     print(f"📁 JSON Saved: {json_path}\n")
 
 if __name__ == "__main__":
-    # Run the main asynchronous function
     asyncio.run(generate_collage_and_retention())
