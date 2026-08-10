@@ -1,1 +1,5 @@
 /uploads
+/dist
+/build
+main.py
+dahua.py
