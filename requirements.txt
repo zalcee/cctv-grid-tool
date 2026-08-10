@@ -1,4 +1,0 @@
-httpx
-pillow
-python-dotenv
-xmltodict
