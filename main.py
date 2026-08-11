@@ -250,8 +250,8 @@ async def generate_collage_and_retention():
         collage.paste(img, (x, y))
 
     # Dynamic file naming based on the brand
-    image_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-collage.jpg"
-    json_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-retention.txt"
+    image_path = uploads_dir / f"{brand.lower()}-collage.jpg"
+    json_path = uploads_dir / f"{brand.lower()}-retention.txt"
 
     # Save JPEG with 85% quality
     collage.save(image_path, "JPEG", quality=85)
@@ -265,3 +265,5 @@ async def generate_collage_and_retention():
 
 if __name__ == "__main__":
     asyncio.run(generate_collage_and_retention())
+
+    
