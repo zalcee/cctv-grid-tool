@@ -18,6 +18,7 @@ load_dotenv()
 NVR_IP = os.getenv("NVR_IP")
 USERNAME = os.getenv("NVR_USERNAME")
 PASSWORD = os.getenv("NVR_PASSWORD")
+STORE_CODE = os.getenv("STORE_CODE")
 
 channels_env = os.getenv("CHANNELS", "")
 CHANNELS = [int(ch.strip()) for ch in channels_env.split(",")] if channels_env else []
@@ -27,7 +28,7 @@ if not NVR_IP or not USERNAME or not PASSWORD or not CHANNELS:
     exit(1)
 
 # Ensure uploads directory exists
-uploads_dir = Path("uploads")
+uploads_dir = Path(STORE_CODE)
 uploads_dir.mkdir(parents=True, exist_ok=True)
 
 # Define Philippine Time (PHT) UTC+8
