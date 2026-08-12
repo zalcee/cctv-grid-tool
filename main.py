@@ -228,7 +228,12 @@ async def generate_collage_and_retention():
 
     for i, (snapshot, retention) in enumerate(results):
         channel = CHANNELS[i]
-        retention_data[f"channel_{channel}"] = retention
+        # retention_data[f"channel_{channel}"] = retention
+        # if snapshot is not None:
+        #     valid_snapshots.append(snapshot)
+        if retention.get("hasRecording") is True:
+            retention_data[f"channel_{channel}"] = retention
+            
         if snapshot is not None:
             valid_snapshots.append(snapshot)
 
