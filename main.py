@@ -185,6 +185,7 @@ async def get_channel_retention(client: httpx.AsyncClient, channel: int, brand: 
             diff_time = now - oldest_date
             
             return {
+                "storeName": STORE_NAME,
                 "hasRecording": True,
                 "oldestRecording": get_pht_iso_string(oldest_date),
                 "latestRecording": get_pht_iso_string(now),
