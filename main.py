@@ -19,6 +19,7 @@ NVR_IP = os.getenv("NVR_IP")
 USERNAME = os.getenv("NVR_USERNAME")
 PASSWORD = os.getenv("NVR_PASSWORD")
 STORE_CODE = os.getenv("STORE_CODE")
+STORE_NAME = os.getenv("STORE_NAME")
 
 channels_env = os.getenv("CHANNELS", "")
 CHANNELS = [int(ch.strip()) for ch in channels_env.split(",")] if channels_env else []
@@ -143,6 +144,7 @@ async def get_channel_retention(client: httpx.AsyncClient, channel: int, brand: 
             diff_time = utc_now - oldest_date
             
             return {
+                "storeName": STORE_NAME,
                 "hasRecording": True,
                 "oldestRecording": get_pht_iso_string(oldest_date),
                 "latestRecording": get_pht_iso_string(now),
