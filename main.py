@@ -262,6 +262,16 @@ async def generate_collage_and_retention():
     image_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-collage.jpg"
     json_path = uploads_dir / f"{pht_date_stamp}-{brand.lower()}-retention.txt"
 
+
+    # Delete previous day's files for this brand
+    for old_file in uploads_dir.glob(f"*-{brand.lower()}-collage.jpg"):
+        if old_file != image_path:
+            old_file.unlink()
+
+    for old_file in uploads_dir.glob(f"*-{brand.lower()}-retention.txt"):
+        if old_file != json_path:
+            old_file.unlink()
+
     # Save JPEG with 85% quality
     collage.save(image_path, "JPEG", quality=85)
     
